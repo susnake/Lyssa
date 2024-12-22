@@ -5,7 +5,7 @@ from telegram import (
     InputFile
 )
 from telegram.ext import (
-    ContextTypes
+    ContextTypes,
 )
 import logging
 import random
@@ -132,7 +132,64 @@ def generate_captcha_image(
     byte_io.seek(0)
 
     return byte_io
+async def restrict_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
+    """Ограничивает права пользователя на время прохождения капчи."""
+    try:
+        await context.bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=user_id,
+            permissions={
+                'can_send_messages': False,
+                'can_send_media_messages': False,
+                'can_send_polls': False,
+                'can_send_other_messages': False,
+                'can_add_web_page_previews': False,
+            },
+        )
+        logger.info(f"Права пользователя {user_id} успешно ограничены.")
+    except Exception as e:
+        logger.error(f"Не удалось ограничить права пользователя {user_id}: {e}")
+        return
 
+    config = load_config()
+    time_limit = config.get("time_limit", DEFAULT_CONFIG["time_limit"])
+
+    # Удаляем старые задания
+    if user_id in captcha_jobs:
+        for job in captcha_jobs[user_id].values():
+            job.schedule_removal()
+        captcha_jobs.pop(user_id, None)
+
+    if not context.job_queue:
+        logger.error("Job queue не инициализирована.")
+        return
+
+    try:
+        # Запланировать предупреждение
+        warning_time = time_limit // 2
+        job_warning = context.job_queue.run_once(
+            callback=send_warning,
+            when=warning_time,
+            data={"chat_id": chat_id, "user_id": user_id},
+            name=f"warning_{user_id}"
+        )
+        logger.info(f"Предупреждение для пользователя {user_id} запланировано через {warning_time} секунд.")
+
+        # Запланировать кик
+        job_kick = context.job_queue.run_once(
+            callback=kick_user,
+            when=time_limit,
+            data={"chat_id": chat_id, "user_id": user_id},
+            name=f"kick_{user_id}"
+        )
+        logger.info(f"Кик для пользователя {user_id} запланирован через {time_limit} секунд.")
+
+        captcha_jobs[user_id] = {
+            'warning': job_warning,
+            'kick': job_kick,
+        }
+    except Exception as e:
+        logger.error(f"Ошибка при планировании задач для пользователя {user_id}: {e}")
 
 async def captcha_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Меняет тип капчи."""
@@ -408,57 +465,50 @@ async def handle_left_members(update: Update, context: ContextTypes.DEFAULT_TYPE
             del user_captcha_messages[user_id]
 
 
-async def restrict_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
-    """Ограничивает права пользователя на время прохождения капчи."""
+async def send_warning(context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет предупреждение пользователю о оставшемся времени."""
+    job = context.job
+    data = job.data
+    chat_id = data["chat_id"]
+    user_id = data["user_id"]
+
     try:
-        # Ограничиваем отправку сообщений и медиа
-        await context.bot.restrict_chat_member(
+        # Загружаем актуальную конфигурацию
+        config = load_config()
+        time_limit = config.get("time_limit", DEFAULT_CONFIG["time_limit"])
+
+        # Вычисляем оставшееся время до истечения лимита
+        warning_time = time_limit // 2
+
+        # Получаем информацию о пользователе
+        user = await context.bot.get_chat_member(chat_id, user_id)
+        logger.info(f"Статус пользователя {user_id}: {user.status}")
+
+        # Проверяем статус пользователя
+        if user.status in ["left", "kicked"]:
+            logger.info(f"Пользователь {user_id} уже покинул чат. Предупреждение не отправляется.")
+            return
+        elif user.status == "restricted":
+            logger.warning(f"Пользователь {user_id} находится в ограниченном состоянии. Продолжаем обработку.")
+
+        # Формируем упоминание пользователя
+        user_full_name = user.user.full_name
+        mention = f"@{user.user.username}" if user.user.username else user_full_name
+
+        # Отправляем предупреждение
+        warning_message = await context.bot.send_message(
             chat_id=chat_id,
-            user_id=user_id,
-            permissions={
-                'can_send_messages': False,
-                'can_send_media_messages': False,
-                'can_send_polls': False,
-                'can_send_other_messages': False,
-                'can_add_web_page_previews': False,
-            },
+            text=f"Пользователь {mention}: у вас осталось {warning_time} секунд, чтобы пройти капчу.",
         )
-        logger.info(f"Права пользователя {user_id} ограничены.")
+        logger.info(f"Отправлено предупреждение пользователю {user_id}.")
+
+        # Сохраняем message_id предупреждения
+        if user_id not in user_captcha_messages:
+            user_captcha_messages[user_id] = {}
+        user_captcha_messages[user_id]['warning'] = warning_message.message_id
+
     except Exception as e:
-        logger.error(f"Не удалось ограничить права пользователя {user_id}: {e}")
-        return
-
-    # Загружаем актуальную конфигурацию
-    config = load_config()
-    time_limit = config.get("time_limit", DEFAULT_CONFIG["time_limit"])
-
-    # Запланировать предупреждение через половину времени лимита
-    warning_time = time_limit // 2
-    job_warning = context.job_queue.run_once(
-        callback=send_warning,
-        when=warning_time,
-        data={"chat_id": chat_id, "user_id": user_id},
-        name=f"warning_{user_id}"
-    )
-    logger.info(f"Предупреждение для пользователя {user_id} запланировано через {warning_time} секунд.")
-
-    # Запланировать кик через полный лимит времени
-    job_kick = context.job_queue.run_once(
-        callback=kick_user,
-        when=time_limit,
-        data={"chat_id": chat_id, "user_id": user_id},
-        name=f"kick_{user_id}"
-    )
-    logger.info(f"Кик для пользователя {user_id} запланирован через {time_limit} секунд.")
-
-    # Сохраняем задания для возможного отмена
-    captcha_jobs[user_id] = {
-        'warning': job_warning,
-        'kick': job_kick,
-    }
-    logger.info(
-        f"Капча для пользователя {user_id} запланирована: предупреждение через {warning_time} секунд, кик через {time_limit} секунд.")
-
+        logger.error(f"Не удалось отправить предупреждение пользователю {user_id}: {e}")
 
 async def send_warning(context: ContextTypes.DEFAULT_TYPE):
     """Отправляет предупреждение пользователю о оставшемся времени."""
@@ -476,7 +526,7 @@ async def send_warning(context: ContextTypes.DEFAULT_TYPE):
         warning_time = time_limit // 2
 
         user = await context.bot.get_chat_member(chat_id, user_id)
-        if user.status in ["left", "kicked", "restricted"]:
+        if user.status in ["left", "kicked"]:
             logger.info(f"Пользователь {user_id} уже покинул чат. Предупреждение не отправляется.")
             return
 

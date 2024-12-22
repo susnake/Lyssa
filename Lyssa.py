@@ -8,9 +8,9 @@ from modules.captcha import (
     load_config, save_config, captcha_command, handle_new_members,
     handle_left_members, button_callback, handle_text_messages, kick_user, Update
 )
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters, JobQueue
 from modules.banUser import set_ban_mode, ban_or_kick_user
-from modules.lock import set_access_level, has_permission
+from modules.lock import has_permission, lock_command
 from modules.time_limit import time_limit_command
 
 # Настройка логирования
@@ -26,7 +26,6 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Рекомендуется храни
 if not TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN не установлена. Пожалуйста, установите переменную окружения.")
     exit(1)
-
 
 async def some_command(update, context):
     if not await has_permission(update, context, "admin"):
@@ -45,7 +44,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help — показать это сообщение\n"
         "/captcha <type> — сменить тип капчи (button, math, fruits, image)\n"
         "/timeLimit <seconds> — изменить время для капчи\n"
-        "/lock — команды только для админов\n"
+        "/lock — команды только для 'owner', 'admin' или 'all'\n"
+        "/banUsers — банить/кикать не прошедших капчу\n"
         "/restrict — запрет медиа для новичков 24ч\n"
         "/deleteEntryMessages — удалять ли сообщения о входе\n"
         "/greeting — включить/выключить приветствие\n"
@@ -54,7 +54,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/strict — вкл/выкл strict режим\n"
         "/customCaptchaMessage <message> — своё сообщение капчи\n"
         "/deleteGreetingTime <seconds> — время удаления приветствия\n"
-        "/banUsers — банить/кикать не прошедших капчу\n"
         "/deleteEntryOnKick — удалять ли сообщение о входе при кике\n"
         "/cas — вкл/выкл Combot Anti-Spam\n"
         "/underAttack — вкл/выкл режим автокика\n"
@@ -69,6 +68,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/restrictTime <hours> — время рестрикта медиа\n"
         "/comments <N> — показать и упомянуть пользователей с меньше N сообщениями\n"
         "/link <link or ID> — лог-чат\n"
+        "/tries <N> — количество попыток ввести images капчу\n"
     )
     await update.message.reply_text(help_text)
 
@@ -106,26 +106,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     if update:
         logger.info(f"Update content: {update}")
 
-    # Пытаемся отправить сообщение в чат, если возможно
-    if update and update.effective_chat:
-        try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"Произошла ошибка: {error_message}. Пожалуйста, повторите попытку позже.",
-            )
-        except Exception as e:
-            logger.error(f"Не удалось отправить сообщение об ошибке в чат: {e}")
-
-
 def main():
     """Запуск бота."""
     app = ApplicationBuilder().token(TOKEN).build()
-
     # Обработчики команд и сообщений
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("captcha", captcha_command))
     app.add_handler(CommandHandler("banUsers", ban_users_command))
-    app.add_handler(CommandHandler("lock", set_access_level))
+    app.add_handler(CommandHandler("lock", lock_command))
     app.add_handler(CommandHandler("timeLimit", time_limit_command))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_members))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, handle_left_members))
@@ -138,7 +126,6 @@ def main():
     logger.info("Бот запущен и ожидает новых сообщений.")
     # Запуск бота
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
