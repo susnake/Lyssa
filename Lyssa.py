@@ -3,13 +3,13 @@ import os
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'modules'))
 import logging
-from captcha import (
+from modules.captcha import (
     load_config, save_config, captcha_command, handle_new_members,
     handle_left_members, button_callback, handle_text_messages, kick_user, Update
 )
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-from banUsers import set_ban_mode, ban_or_kick_user
-from lock import set_access_level, has_permission
+from modules.banUser import set_ban_mode, ban_or_kick_user
+from modules.lock import set_access_level, has_permission
 
 # Настройка логирования
 logging.basicConfig(
