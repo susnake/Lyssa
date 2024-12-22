@@ -2,6 +2,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from captcha import save_config, load_config  # Используем функции из captcha.py для работы с конфигурацией
+from lock import has_permission
 
 logger = logging.getLogger(__name__)
 

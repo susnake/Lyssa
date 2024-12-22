@@ -1,5 +1,6 @@
 import sys
 import os
+from dotenv import load_dotenv
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'modules'))
 import logging
@@ -10,6 +11,7 @@ from modules.captcha import (
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 from modules.banUser import set_ban_mode, ban_or_kick_user
 from modules.lock import set_access_level, has_permission
+from modules.time_limit import time_limit_command
 
 # Настройка логирования
 logging.basicConfig(
@@ -17,8 +19,8 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# Ваш токен (после перегенерации)
+load_dotenv()
+# Ваш токен
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Рекомендуется хранить токен в переменной окружения
 
 if not TOKEN:
@@ -124,6 +126,7 @@ def main():
     app.add_handler(CommandHandler("captcha", captcha_command))
     app.add_handler(CommandHandler("banUsers", ban_users_command))
     app.add_handler(CommandHandler("lock", set_access_level))
+    app.add_handler(CommandHandler("timeLimit", time_limit_command))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_members))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, handle_left_members))
     app.add_handler(CallbackQueryHandler(button_callback))

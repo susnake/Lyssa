@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import string
 import json
 import io
+from lock import has_permission
 
 logger = logging.getLogger(__name__)
 # Список фруктов с эмоджи
@@ -76,8 +77,14 @@ def generate_captcha_code(length=5):
     return ''.join(random.choices(characters, k=length))
 
 
-def generate_captcha_image(text, font_path='/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', size=(200, 80)):
-    width, height = size
+def generate_captcha_image(
+    text,
+    font_path='Fonts/arial.ttf',  # Убедитесь, что путь к шрифту корректен
+    size=(200, 80),  # Передаем размеры изображения как параметр
+    noise_points=50,
+    blur_intensity=0
+):
+    width, height = size  # Используем переданный параметр size
     background_color = (255, 255, 255)
     font_size = 36
 
@@ -89,20 +96,17 @@ def generate_captcha_image(text, font_path='/usr/share/fonts/truetype/dejavu/Dej
     try:
         font = ImageFont.truetype(font_path, font_size)
     except IOError:
-        # Если шрифт не найден, используем стандартный
         font = ImageFont.load_default()
         logger.warning("Шрифт не найден. Используется стандартный шрифт.")
 
     # Добавляем текст на изображение
     text_color = (random.randint(0, 100), random.randint(0, 100), random.randint(0, 100))
-
-    # Используем getbbox для получения размеров текста
     bbox = font.getbbox(text)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
 
-    text_x = (width - text_width) / 2
-    text_y = (height - text_height) / 2
+    text_x = (width - text_width) // 2
+    text_y = (height - text_height) // 2
     draw.text((text_x, text_y), text, font=font, fill=text_color)
 
     # Добавляем случайные линии для усложнения капчи
@@ -113,13 +117,14 @@ def generate_captcha_image(text, font_path='/usr/share/fonts/truetype/dejavu/Dej
         draw.line([start, end], fill=line_color, width=2)
 
     # Добавляем шум
-    for _ in range(100):
+    for _ in range(noise_points):
         x = random.randint(0, width)
         y = random.randint(0, height)
         draw.point((x, y), fill=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)))
 
-    # Применяем фильтры для искажения
-    image = image.filter(ImageFilter.BLUR)
+    # Применяем фильтр размытия
+    for _ in range(blur_intensity):
+        image = image.filter(ImageFilter.BLUR)
 
     # Сохраняем изображение в байтовый поток
     byte_io = io.BytesIO()
