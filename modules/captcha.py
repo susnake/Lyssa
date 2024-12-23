@@ -1,12 +1,5 @@
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputFile
-)
-from telegram.ext import (
-    ContextTypes,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import ContextTypes
 import logging
 import random
 import os
@@ -15,6 +8,8 @@ import string
 import json
 import io
 from lock import has_permission
+from banUser import ban_or_kick_user
+from config import load_config, save_config
 
 logger = logging.getLogger(__name__)
 # Список фруктов с эмоджи
@@ -30,37 +25,11 @@ DEFAULT_CONFIG = {
     "captcha_type": "button",  # Возможные: button, math, fruits, image
     "time_limit": 60,  # Время на прохождение капчи в секундах
     "custom_captcha_message": "Пожалуйста, подтвердите, что вы не бот!",
-    "button_text": "Я не бот!"
+    "button_text": "Я не бот!",
+    "banUsers": False   # False: кикать, True: банить
 }
 
 CONFIG_FILE = "lyssa_config.json"
-
-
-def load_config():
-    """Загружает конфигурацию из файла. Если файл отсутствует, создаёт его с настройками по умолчанию."""
-    if not os.path.exists(CONFIG_FILE):
-        logger.warning("Файл конфигурации не найден. Создаётся новый файл с настройками по умолчанию.")
-        save_config(DEFAULT_CONFIG)  # Создаём файл с настройками по умолчанию
-        return DEFAULT_CONFIG
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as file:
-            config = json.load(file)
-        logger.info("Конфигурация успешно загружена.")
-        return config
-    except (json.JSONDecodeError, IOError) as e:
-        logger.error(f"Ошибка при загрузке конфигурации: {e}")
-        return DEFAULT_CONFIG
-
-
-def save_config(config):
-    """Сохраняет конфигурацию в файл."""
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as file:
-            json.dump(config, file, indent=4, ensure_ascii=False)
-        logger.info("Конфигурация успешно сохранена.")
-    except IOError as e:
-        logger.error(f"Ошибка при сохранении конфигурации: {e}")
-
 
 # Инициализация конфигурации
 bot_config = load_config()
@@ -78,11 +47,11 @@ def generate_captcha_code(length=5):
 
 
 def generate_captcha_image(
-    text,
-    font_path='Fonts/arial.ttf',  # Убедитесь, что путь к шрифту корректен
-    size=(200, 80),  # Передаем размеры изображения как параметр
-    noise_points=50,
-    blur_intensity=0
+        text,
+        font_path='Fonts/arial.ttf',  # Убедитесь, что путь к шрифту корректен
+        size=(200, 80),  # Передаем размеры изображения как параметр
+        noise_points=50,
+        blur_intensity=0
 ):
     width, height = size  # Используем переданный параметр size
     background_color = (255, 255, 255)
@@ -132,6 +101,35 @@ def generate_captcha_image(
     byte_io.seek(0)
 
     return byte_io
+
+
+async def kick_user(context: ContextTypes.DEFAULT_TYPE):
+    """Банит пользователя из группы за не прохождение капчи."""
+    job = context.job
+    data = job.data
+    chat_id = data["chat_id"]
+    user_id = data["user_id"]
+    try:
+        user = await context.bot.get_chat_member(chat_id, user_id)
+        if user.status in ["left", "kicked"]:
+            logger.info(f"Пользователь {user_id} уже покинул чат. Кик не требуется.")
+            return
+
+        # Используем ban_chat_member вместо kick_chat_member
+        await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+        user = await context.bot.get_chat_member(chat_id, user_id)
+        user_full_name = user.user.full_name
+        mention = f"@{user.user.username}" if user.user.username else user_full_name
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"Пользователь {mention} был кикнут за не прохождение капчи.",
+        )
+        logger.info(f"Пользователь {user_id} кикнут из чата.")
+    except Exception as e:
+        logger.error(f"Не удалось кикнуть пользователя {user_id}: {e}")
+
+
 async def restrict_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     """Ограничивает права пользователя на время прохождения капчи."""
     try:
@@ -190,6 +188,7 @@ async def restrict_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_i
         }
     except Exception as e:
         logger.error(f"Ошибка при планировании задач для пользователя {user_id}: {e}")
+
 
 async def captcha_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Меняет тип капчи."""
@@ -464,54 +463,8 @@ async def handle_left_members(update: Update, context: ContextTypes.DEFAULT_TYPE
                     logger.error(f"Не удалось удалить сообщение '{key}' капчи для пользователя {user_id}: {e}")
             del user_captcha_messages[user_id]
 
-
 async def send_warning(context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет предупреждение пользователю о оставшемся времени."""
-    job = context.job
-    data = job.data
-    chat_id = data["chat_id"]
-    user_id = data["user_id"]
-
-    try:
-        # Загружаем актуальную конфигурацию
-        config = load_config()
-        time_limit = config.get("time_limit", DEFAULT_CONFIG["time_limit"])
-
-        # Вычисляем оставшееся время до истечения лимита
-        warning_time = time_limit // 2
-
-        # Получаем информацию о пользователе
-        user = await context.bot.get_chat_member(chat_id, user_id)
-        logger.info(f"Статус пользователя {user_id}: {user.status}")
-
-        # Проверяем статус пользователя
-        if user.status in ["left", "kicked"]:
-            logger.info(f"Пользователь {user_id} уже покинул чат. Предупреждение не отправляется.")
-            return
-        elif user.status == "restricted":
-            logger.warning(f"Пользователь {user_id} находится в ограниченном состоянии. Продолжаем обработку.")
-
-        # Формируем упоминание пользователя
-        user_full_name = user.user.full_name
-        mention = f"@{user.user.username}" if user.user.username else user_full_name
-
-        # Отправляем предупреждение
-        warning_message = await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"Пользователь {mention}: у вас осталось {warning_time} секунд, чтобы пройти капчу.",
-        )
-        logger.info(f"Отправлено предупреждение пользователю {user_id}.")
-
-        # Сохраняем message_id предупреждения
-        if user_id not in user_captcha_messages:
-            user_captcha_messages[user_id] = {}
-        user_captcha_messages[user_id]['warning'] = warning_message.message_id
-
-    except Exception as e:
-        logger.error(f"Не удалось отправить предупреждение пользователю {user_id}: {e}")
-
-async def send_warning(context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет предупреждение пользователю о оставшемся времени."""
+    """Отправляет предупреждение пользователю об оставшемся времени."""
     job = context.job
     data = job.data
     chat_id = data["chat_id"]
@@ -548,32 +501,33 @@ async def send_warning(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Не удалось отправить предупреждение пользователю {user_id}: {e}")
 
 
-async def kick_user(context: ContextTypes.DEFAULT_TYPE):
-    """Банит пользователя из группы за не прохождение капчи."""
-    job = context.job
-    data = job.data
-    chat_id = data["chat_id"]
-    user_id = data["user_id"]
+async def handle_failed_captcha(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
+    """
+    Обрабатывает неудачную попытку прохождения капчи.
+    """
+    config = load_config()
+    ban_mode = config['banUsers']  # Используем прямой доступ
+
+    # Логируем неудачную попытку
+    logger.info(f"Пользователь {user_id} не прошёл капчу.")
+
+    # Вызываем функцию ban_or_kick_user из banUser.py
+    await ban_or_kick_user(context, chat_id, user_id)
+
+    # Получаем информацию о пользователе для уведомления
     try:
         user = await context.bot.get_chat_member(chat_id, user_id)
-        if user.status in ["left", "kicked"]:
-            logger.info(f"Пользователь {user_id} уже покинул чат. Кик не требуется.")
-            return
-
-        # Используем ban_chat_member вместо kick_chat_member
-        await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
-        user = await context.bot.get_chat_member(chat_id, user_id)
         user_full_name = user.user.full_name
+
         mention = f"@{user.user.username}" if user.user.username else user_full_name
-
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"Пользователь {mention} был кикнут за не прохождение капчи.",
-        )
-        logger.info(f"Пользователь {user_id} кикнут из чата.")
     except Exception as e:
-        logger.error(f"Не удалось кикнуть пользователя {user_id}: {e}")
+        logger.error(f"Не удалось получить информацию о пользователе {user_id}: {e}")
+        mention = f"Пользователь {user_id}"
 
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"Пользователь {mention} не прошёл капчу и был{' забанен' if ban_mode else ' кикнут'}.",
+    )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатия на кнопки капчи."""

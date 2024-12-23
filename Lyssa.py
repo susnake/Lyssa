@@ -8,10 +8,11 @@ from modules.captcha import (
     load_config, save_config, captcha_command, handle_new_members,
     handle_left_members, button_callback, handle_text_messages, kick_user, Update
 )
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters, JobQueue
-from modules.banUser import set_ban_mode, ban_or_kick_user
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, \
+    filters
 from modules.lock import has_permission, lock_command
 from modules.time_limit import time_limit_command
+from modules.banUser import set_ban_mode
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,6 +27,7 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")  # Рекомендуется храни
 if not TOKEN:
     logger.error("TELEGRAM_BOT_TOKEN не установлена. Пожалуйста, установите переменную окружения.")
     exit(1)
+
 
 async def some_command(update, context):
     if not await has_permission(update, context, "admin"):
@@ -73,28 +75,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text)
 
 
-async def ban_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для изменения режима бана/кика."""
-    if not await has_permission(update, context):
-        await update.message.reply_text("У вас недостаточно прав для выполнения этой команды.")
-        return
-
-    if context.args:
-        mode = context.args[0].lower()
-        if mode == "true":
-            set_ban_mode(True)
-            await update.message.reply_text("Режим изменён: пользователи будут добавляться в черный список.")
-        elif mode == "false":
-            set_ban_mode(False)
-            await update.message.reply_text("Режим изменён: пользователи будут кикаться.")
-        else:
-            await update.message.reply_text("Используйте: /banUsers true или /banUsers false.")
-    else:
-        config = load_config()
-        current_mode = "бан" if config["banUsers"] else "кик"
-        await update.message.reply_text(f"Текущий режим: {current_mode}.")
-
-
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает ошибки, возникающие в хендлерах."""
     logger.error(msg="Exception while handling an update:", exc_info=context.error)
@@ -106,15 +86,16 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     if update:
         logger.info(f"Update content: {update}")
 
+
 def main():
     """Запуск бота."""
     app = ApplicationBuilder().token(TOKEN).build()
     # Обработчики команд и сообщений
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("captcha", captcha_command))
-    app.add_handler(CommandHandler("banUsers", ban_users_command))
     app.add_handler(CommandHandler("lock", lock_command))
     app.add_handler(CommandHandler("timeLimit", time_limit_command))
+    app.add_handler(CommandHandler('banUsers', set_ban_mode))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_members))
     app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, handle_left_members))
     app.add_handler(CallbackQueryHandler(button_callback))
@@ -126,6 +107,7 @@ def main():
     logger.info("Бот запущен и ожидает новых сообщений.")
     # Запуск бота
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
