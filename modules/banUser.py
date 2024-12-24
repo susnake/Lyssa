@@ -1,4 +1,4 @@
-# modules/banUser.py
+# modules/banUsers.py
 
 import logging
 import datetime
@@ -63,34 +63,22 @@ async def set_ban_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Произошла ошибка при изменении режима. Пожалуйста, попробуйте позже.")
 
 async def ban_or_kick_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
-    """
-    Банит или кикает пользователя в зависимости от текущего режима, установленного в конфигурации.
-    """
     try:
-        # Загружаем текущую конфигурацию
         config = load_config()
-
-        # Получаем текущий режим
         ban_mode = config.get('banUsers', DEFAULT_BAN_USERS)
 
         if ban_mode:
-            # Баним пользователя
             await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
             logger.info(f"Пользователь {user_id} забанен в чате {chat_id}.")
         else:
-            # Кикаем пользователя без бана
-            # Временный бан на 5 секунд, затем отменяем бан
             until_date = int(datetime.datetime.utcnow().timestamp()) + 5
             await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id, until_date=until_date)
             logger.info(f"Пользователь {user_id} временно забанен для кика из чата {chat_id}.")
-            # Ждём 5 секунд, чтобы Telegram обработал бан
-            await asyncio.sleep(5)
-            # Снимаем временный бан, что эквивалентно кику
+            await asyncio.sleep(6)  # Увеличьте время ожидания до 6 секунд
             await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
             logger.info(f"Временный бан снят, пользователь {user_id} кикнут из чата {chat_id}.")
 
     except Exception as e:
-        # Получаем текущий режим для логирования
         config = load_config()
         ban_mode = config.get('banUsers', DEFAULT_BAN_USERS)
         action = 'забанить' if ban_mode else 'кикнуть'

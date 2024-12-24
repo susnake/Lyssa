@@ -1,17 +1,18 @@
+# modules/captcha.py
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import ContextTypes
 import logging
 import random
-import os
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import string
-import json
 import io
 from lock import has_permission
-from banUser import ban_or_kick_user
+from banUser import ban_or_kick_user  # Корректный импорт
 from config import load_config, save_config
 
 logger = logging.getLogger(__name__)
+
 # Список фруктов с эмоджи
 ALL_FRUITS = [
     "🍎", "🍌", "🍇", "🍓", "🍍",
@@ -103,31 +104,37 @@ def generate_captcha_image(
     return byte_io
 
 
-async def kick_user(context: ContextTypes.DEFAULT_TYPE):
-    """Банит пользователя из группы за не прохождение капчи."""
-    job = context.job
-    data = job.data
+async def handle_failed_captcha(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обрабатывает неудачную попытку прохождения капчи.
+    """
+    data = context.job.data
     chat_id = data["chat_id"]
     user_id = data["user_id"]
+
+    config = load_config()
+    ban_mode = config.get('banUsers', DEFAULT_CONFIG["banUsers"])  # Используем прямой доступ
+
+    # Логируем неудачную попытку
+    logger.info(f"Пользователь {user_id} не прошёл капчу.")
+
+    # Вызываем функцию ban_or_kick_user из banUser.py
+    await ban_or_kick_user(context, chat_id, user_id)
+
+    # Получаем информацию о пользователе для уведомления
     try:
         user = await context.bot.get_chat_member(chat_id, user_id)
-        if user.status in ["left", "kicked"]:
-            logger.info(f"Пользователь {user_id} уже покинул чат. Кик не требуется.")
-            return
-
-        # Используем ban_chat_member вместо kick_chat_member
-        await context.bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
-        user = await context.bot.get_chat_member(chat_id, user_id)
         user_full_name = user.user.full_name
-        mention = f"@{user.user.username}" if user.user.username else user_full_name
 
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"Пользователь {mention} был кикнут за не прохождение капчи.",
-        )
-        logger.info(f"Пользователь {user_id} кикнут из чата.")
+        mention = f"@{user.user.username}" if user.user.username else user_full_name
     except Exception as e:
-        logger.error(f"Не удалось кикнуть пользователя {user_id}: {e}")
+        logger.error(f"Не удалось получить информацию о пользователе {user_id}: {e}")
+        mention = f"Пользователь {user_id}"
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"Пользователь {mention} не прошёл капчу и был{' забанен' if ban_mode else ' кикнут'}.",
+    )
 
 
 async def restrict_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
@@ -175,7 +182,7 @@ async def restrict_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_i
 
         # Запланировать кик
         job_kick = context.job_queue.run_once(
-            callback=kick_user,
+            callback=handle_failed_captcha,
             when=time_limit,
             data={"chat_id": chat_id, "user_id": user_id},
             name=f"kick_{user_id}"
@@ -265,7 +272,7 @@ async def handle_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.info(f"Пользователь {user.id} уже верифицирован.")
             continue
 
-        captcha_type = bot_config["captcha_type"]
+        captcha_type = bot_config.get("captcha_type", DEFAULT_CONFIG["captcha_type"])
         logger.info(f"Обработка капчи для пользователя {user.id} типа {captcha_type}")
 
         # Получаем имя пользователя для персонализации сообщений
@@ -293,7 +300,7 @@ async def handle_new_members(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 message = await context.bot.send_message(
                     chat_id=chat_id,
-                    text=f"{user_display}, {bot_config['custom_captcha_message']}, у вас есть {time_limit}",
+                    text=f"{user_display}, {bot_config['custom_captcha_message']}, у вас есть {time_limit} секунд.",
                     reply_markup=reply_markup
                 )
                 logger.info(f"Сообщение капчи отправлено пользователю {user.id}.")
@@ -463,6 +470,7 @@ async def handle_left_members(update: Update, context: ContextTypes.DEFAULT_TYPE
                     logger.error(f"Не удалось удалить сообщение '{key}' капчи для пользователя {user_id}: {e}")
             del user_captcha_messages[user_id]
 
+
 async def send_warning(context: ContextTypes.DEFAULT_TYPE):
     """Отправляет предупреждение пользователю об оставшемся времени."""
     job = context.job
@@ -501,34 +509,6 @@ async def send_warning(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Не удалось отправить предупреждение пользователю {user_id}: {e}")
 
 
-async def handle_failed_captcha(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
-    """
-    Обрабатывает неудачную попытку прохождения капчи.
-    """
-    config = load_config()
-    ban_mode = config['banUsers']  # Используем прямой доступ
-
-    # Логируем неудачную попытку
-    logger.info(f"Пользователь {user_id} не прошёл капчу.")
-
-    # Вызываем функцию ban_or_kick_user из banUser.py
-    await ban_or_kick_user(context, chat_id, user_id)
-
-    # Получаем информацию о пользователе для уведомления
-    try:
-        user = await context.bot.get_chat_member(chat_id, user_id)
-        user_full_name = user.user.full_name
-
-        mention = f"@{user.user.username}" if user.user.username else user_full_name
-    except Exception as e:
-        logger.error(f"Не удалось получить информацию о пользователе {user_id}: {e}")
-        mention = f"Пользователь {user_id}"
-
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"Пользователь {mention} не прошёл капчу и был{' забанен' if ban_mode else ' кикнут'}.",
-    )
-
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатия на кнопки капчи."""
     query = update.callback_query
@@ -560,7 +540,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "captcha_math_fail":
         await query.edit_message_text(f"{mention}, неверный ответ! Вы будете кикнуты.")
         logger.info(f"Пользователь {user_id} неверно ответил на math капчу.")
-        await kick_user_immediately(context, chat_id, user_id)
+        await ban_or_kick_user(context, chat_id, user_id)  # Заменено
 
     elif data == "captcha_fruit_ok":
         verified_users.add(user_id)
@@ -571,7 +551,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "captcha_fruit_fail":
         await query.edit_message_text(f"{mention}, неправильно! Вы будете кикнуты.")
         logger.info(f"Пользователь {user_id} неправильно ответил на фруктовую капчу.")
-        await kick_user_immediately(context, chat_id, user_id)
+        await ban_or_kick_user(context, chat_id, user_id)  # Заменено
 
     elif data.startswith("captcha_image_"):
         char_clicked = data.split("_")[-1]
@@ -596,13 +576,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_caption("Неправильный ввод символа! Вы будете удалены.")
             logger.info(f"Пользователь {user_id} ввёл неверный символ: {char_clicked}")
-            await kick_user_immediately(context, chat_id, user_id)
+            await ban_or_kick_user(context, chat_id, user_id)  # Заменено
 
     elif data == "captcha_math_fail":
         # Неправильный ответ на math капчу
         await query.edit_message_text(f"{mention}, неверный ответ! Вы будете кикнуты.")
         logger.info(f"Пользователь {user_id} неверно ответил на math капчу.")
-        await kick_user_immediately(context, chat_id, user_id)
+        await ban_or_kick_user(context, chat_id, user_id)  # Заменено
 
     elif data == "captcha_fruit_ok":
         # Правильный фрукт
@@ -616,7 +596,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Неправильный фрукт
         await query.edit_message_text(f"{mention}, неправильно! Вы будете кикнуты.")
         logger.info(f"Пользователь {user_id} неправильно ответил на фруктовую капчу.")
-        await kick_user_immediately(context, chat_id, user_id)
+        await ban_or_kick_user(context, chat_id, user_id)  # Заменено
 
 
 async def cancel_captcha_jobs(context: ContextTypes.DEFAULT_TYPE, user_id: int, chat_id: int):
@@ -721,16 +701,16 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             else:
                 await update.message.reply_text("Неверный ответ! Вы будете кикнуты.")
                 logger.info(f"Пользователь {user_id} ввёл неверный ответ на math капчу.")
-                await kick_user_immediately(context, chat_id, user_id)
+                await ban_or_kick_user(context, chat_id, user_id)  # Заменено
         except ValueError:
             await update.message.reply_text("Пожалуйста, введите числовой ответ.")
             logger.info(f"Пользователь {user_id} ввёл некорректный ответ на math капчу.")
-            await kick_user_immediately(context, chat_id, user_id)
+            await ban_or_kick_user(context, chat_id, user_id)  # Заменено
         return
 
     # Проверка на image-капчу (изображение)
     if user_id in user_captcha_code:
-        expected_code = user_captcha_code[user_id]
+        expected_code = user_captcha_code[user_id]["code"]
         user_code = update.message.text.strip()
         if user_code == expected_code:
             verified_users.add(user_id)
@@ -742,7 +722,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await update.message.reply_text("Неверный код! Вы будете кикнуты.")
             logger.info(f"Пользователь {user_id} ввёл неверный код на image капчу.")
-            await kick_user_immediately(context, chat_id, user_id)
+            await ban_or_kick_user(context, chat_id, user_id)  # Заменено
         return
 
 

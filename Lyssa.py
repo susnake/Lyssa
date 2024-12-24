@@ -4,9 +4,8 @@ from dotenv import load_dotenv
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'modules'))
 import logging
-from modules.captcha import (
-    load_config, save_config, captcha_command, handle_new_members,
-    handle_left_members, button_callback, handle_text_messages, kick_user, Update
+from modules.captcha import (captcha_command, handle_new_members,
+    handle_left_members, button_callback, handle_text_messages, Update
 )
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, \
     filters
